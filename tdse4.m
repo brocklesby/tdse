@@ -15,7 +15,7 @@ function tdse4(I,run_index)
 %check for arguments
 if nargin <1
     I = 3e14; %setting the intensity in W/cm^2 if not set as an argument.
-    run_index = 1; % just a marker
+    run_index = 1; % just a marker for incrementing filenames
 end
 
 format compact
@@ -31,7 +31,7 @@ delta = 7e-15;              %pulse full width half maximum in seconds
 phi = pi/2;                 %the CEP
 
 
-%% setting the time 
+%% setting the timescale
 % two important timescales
 % dt is the spacing for calculations of the wavefunction psi
 % Ntotal is the number of wavefunction calculations
@@ -43,29 +43,19 @@ Ncalc = 2^11;               %number of acceleration calcs; 2048 pts usually for 
 time_window = 4 * delta;    %calculation window
 t_zero = 2* delta;          %set the zero time point in the middle of the window
 calc_iter = 2^3;            %number of propagation calculations per acceleration calc
-plot_iter = 2^2 * calc_iter;  %number of propagation calculations per plot points
-Ntotal = Ncalc * calc_iter;  %Ntotal is bigger than Ncalc
-Nplot = Ntotal/ plot_iter;   %Nplot is smaller than Ncalc, or the images are too big
+plot_iter = 2^2 * calc_iter;%number of propagation calculations per plot points
+Ntotal = Ncalc * calc_iter; %Ntotal is bigger than Ncalc
+Nplot = Ntotal/ plot_iter;  %Nplot is smaller than Ncalc, or the images are too big
 dt = time_window / (Ntotal-1);
 t = 0:dt:time_window;
 
 
 %show the numbers
 fprintf('dt step is %g attoseconds, number of Calc steps is %g\n', dt*1e18, Ncalc);
-
-%two important timescales
-% dt is the spacing for calcualtions of psi
-% need a number of acceleration calcs, which determines highest harmonic I
-% can look at in the spectrum
-% need a number of recorded psi, so that I can plot the image (not relevant to calcs) 
-% total_time = 6 * delta;
-% t_zero = 3*  delta;  % sets pulse peak in teh middle
-% max_iter = floor(total_time/dt);  % sets the max of the iteration timescale
-% set up the
+%% setting up the pulse
 env = exp( -2 * log(2) *  ( (t-t_zero)/delta) .^2);  % this is the pulse FIELD envelope
 carrier = cos(w * (t-t_zero) + phi); % set the CEP properly!!
 %now make a pulse
-
 E0 = sqrt( (2*I*1e4)/ (c * eps0) );
 E = E0 .* carrier .* env; %the field
 %calculate cutoff 
@@ -92,10 +82,10 @@ Nx = length(x); % number of spatial grid points
 
 %%  Set up the Hamiltonian operator matrix
 coeff = -h_bar^2/(2*mass*h^2);
-%this next bit sets up the static Coulomb potential
-Vst_vec =   -(e^2 / (4 * pi * eps0))  *  (1./sqrt(a0^2 + x.^2))' ;  %static potential - Soft Coulomb
+%this next bit sets up the static Coulomb potential as a single vector -
+%the leading diagonal of the matrix
+Vstatic =   -(e^2 / (4 * pi * eps0))  *  (1./sqrt(a0^2 + x.^2))' ;  %static potential - Soft Coulomb
 
-%a = ones(Nx,1) * coeff;
 H1 = ones(Nx,1) * coeff;
 H2 = -2 * H1;
 H3 = H1;
@@ -104,7 +94,7 @@ H3 = H1;
 
 psi(1) = 0;  psi(Nx)=0;   %needed?
 %set up the gobbler funciton to tidy up at boundaries;
-gobbler = 1-((sin(0.5 * pi * x/L)).^18); % absorbing boundaries - bit harsh, maybe??
+gobbler = 1-((sin(0.5 * pi * x/L)).^18); % absorbing boundaries
 %abs_bounds=1;  %turn on gobbling
 
 %allocate some memory
@@ -135,13 +125,13 @@ for ii=1:length(t)
     end
 
 %set up time-dependent Hamiltonian
-   Vcol = e * E(ii) * x' ; %column vector length x, varies with the varying laser field
-   lead_diag = 0.5* (ones(Nx, 1) + (0.5*1i*dt/h_bar)*(H2 + Vst_vec + Vcol));
+   Vlaser = e * E(ii) * x' ; %column vector length x, varies with the varying laser field
+   lead_diag = 0.5* (ones(Nx, 1) + (0.5*1i*dt/h_bar)*(H2 + Vstatic + Vlaser));
    off_diag = 0.5*(0.5*1i*dt/h_bar)*H1;
   
   Q = [off_diag lead_diag off_diag];  %make a 3 column version of the matrix
   chi = tri_ge(Q,psi);                %use the custom solver rather than internal function
-  %chi = Q\psi;
+  %chi = Q\psi; %this would use the internal solver, but needs a full (or sparse) matrix
   psi = chi - psi;     
   %if abs_bounds ==1
   psi = gobbler' .* psi;            %damp down reflections from boundaries
@@ -150,10 +140,10 @@ for ii=1:length(t)
 
 % Periodically record values for calculations
 % acceleration calculation every calc_iter points
-  if( rem(ii,calc_iter) < 1 )  % calculate the acceleration
+  if( rem(ii,calc_iter) < 1 )  % calculate the acceleration if appropriate
     a_index = a_index+1; %index for calcualtion
     %need the full Hamiltonian at this time
-    lead_diag = H2 + Vst_vec + Vcol;
+    lead_diag = H2 + Vstatic + Vlaser;
     full_ham = spdiags([H1 lead_diag H3],-1:1,Nx,Nx); %use sparse matrix for accel calc
     psistar = conj(psi);
     ta(a_index) = t(ii);           % Record current time
@@ -213,12 +203,15 @@ f = (1/ (dt * calc_iter) * (1:acc_length)/acc_length);  %calculate frequency sca
 
 odd_harm = (2 * pi * h_bar * c  / (e*lambda)) * (1:2:151); %calculate where the odd harmonics will be
 figure(11);
-plot(2*pi*h_bar*f/e, log(Ew.*conj(Ew)),'.-');
+plot(2*pi*h_bar*f/e, log10(Ew.*conj(Ew)),'.-');
 hold on;
 plot(odd_harm,47,'.r');
 hold off;
 
-title('The Harmonic Spectrum!');
+
+title('The Harmonic Spectrum');
+ylabel('log10(harmonic intensity)')
+xlabel('Energy /eV');
 xlim([50 100]);
 ylim([36 56]);
 
